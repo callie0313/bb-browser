@@ -840,6 +840,22 @@ class HubBridge {
         result = await viewerCommand("/peer/answer", input);
       } else if (clipName === BROWSER_CLIP_ALIAS && command === "view.close") {
         result = await viewerCommand("/peer/close");
+      } else if (clipName === BROWSER_CLIP_ALIAS && command === "view.tab_list") {
+        result = await viewerCommand("/tab/list");
+      } else if (clipName === BROWSER_CLIP_ALIAS && command === "view.tab_switch") {
+        result = await viewerCommand("/tab/switch", { id: (input as any).id });
+      } else if (clipName === BROWSER_CLIP_ALIAS && command === "view.tab_new") {
+        result = await viewerCommand("/tab/new");
+      } else if (clipName === BROWSER_CLIP_ALIAS && command === "view.tab_close") {
+        result = await viewerCommand("/tab/close", { id: (input as any).id });
+      } else if (clipName === BROWSER_CLIP_ALIAS && command === "view.navigate") {
+        result = await viewerCommand("/navigate", { url: (input as any).url });
+      } else if (clipName === BROWSER_CLIP_ALIAS && command === "view.back") {
+        result = await viewerCommand("/back");
+      } else if (clipName === BROWSER_CLIP_ALIAS && command === "view.forward") {
+        result = await viewerCommand("/forward");
+      } else if (clipName === BROWSER_CLIP_ALIAS && command === "view.reload") {
+        result = await viewerCommand("/reload");
       } else if (clipName === BROWSER_CLIP_ALIAS) {
         result = await executeBrowserCommand(command, input);
       } else if (this.platformClipAliases.has(clipName)) {
