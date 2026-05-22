@@ -340,14 +340,14 @@ function buildPlatformClips(): PlatformClip[] {
 
 const BROWSER_COMMANDS = COMMANDS.filter((c) => c.category !== "site");
 
-const VIEW_COMMANDS = [
+const STREAM_COMMANDS = [
   {
-    name: "view.start",
+    name: "stream.start",
     description: "Start remote viewing: creates a WebRTC peer and returns offer SDP + ICE candidates",
     inputSchema: JSON.stringify({ type: "object", properties: {}, additionalProperties: true }),
   },
   {
-    name: "view.answer",
+    name: "stream.answer",
     description: "Complete WebRTC connection: accepts answer SDP + ICE candidates, starts video streaming",
     inputSchema: JSON.stringify({
       type: "object",
@@ -368,17 +368,30 @@ const VIEW_COMMANDS = [
     }),
   },
   {
-    name: "view.close",
+    name: "stream.close",
     description: "Stop remote viewing and close the WebRTC peer",
     inputSchema: JSON.stringify({ type: "object", properties: {}, additionalProperties: true }),
+  },
+  {
+    name: "stream.switch",
+    description: "Switch the streaming tab: tell the streamer to connect to a different tab's CDP WebSocket",
+    inputSchema: JSON.stringify({
+      type: "object",
+      properties: {
+        tab: { type: "string", description: "Short tab ID to switch streaming to" },
+      },
+      required: ["tab"],
+      additionalProperties: true,
+    }),
   },
 ];
 
 const BROWSER_COMMAND_NAMES = [
   ...BROWSER_COMMANDS.map((c) => c.name),
-  "view.start",
-  "view.answer",
-  "view.close",
+  "stream.start",
+  "stream.answer",
+  "stream.close",
+  "stream.switch",
 ];
 
 function buildClipRegistrations() {
@@ -389,7 +402,7 @@ function buildClipRegistrations() {
       input: JSON.stringify(zodToJsonSchema(cmd.args)),
       output: JSON.stringify({ type: "object", additionalProperties: true }),
     })),
-    ...VIEW_COMMANDS.map((cmd) => ({
+    ...STREAM_COMMANDS.map((cmd) => ({
       name: cmd.name,
       description: cmd.description,
       input: cmd.inputSchema,
@@ -588,7 +601,8 @@ export interface HubBridgeOptions {
   hubUrl: string;
   hubToken?: string;
   cdp: CdpConnection;
-  cdpPort: number;
+  /** @deprecated No longer used by streamer; kept for backward compat. */
+  cdpPort?: number;
 }
 
 export class HubBridge {
@@ -600,13 +614,11 @@ export class HubBridge {
   private readonly hubUrl: string;
   private readonly hubToken: string | undefined;
   private readonly cdp: CdpConnection;
-  private readonly cdpPort: number;
 
   constructor(options: HubBridgeOptions) {
     this.hubUrl = options.hubUrl;
     this.hubToken = options.hubToken;
     this.cdp = options.cdp;
-    this.cdpPort = options.cdpPort;
   }
 
   start(): void { this.connect(); }
@@ -725,22 +737,30 @@ export class HubBridge {
       const input = decodeInput(inv.input);
       let result: unknown;
 
-      // view.* commands → streamer sidecar (Protocol 2: /command)
-      if (clipName === BROWSER_CLIP_ALIAS && command === "view.start") {
+      // stream.* commands → streamer sidecar (Protocol 2: /command)
+      if (clipName === BROWSER_CLIP_ALIAS && command === "stream.start") {
         await ensureStreamer();
         const cdpUrl = await this.getCurrentTabCdpUrl();
         result = await streamerCommand("/command", {
           method: "connect",
           params: { cdpUrl },
         });
-      } else if (clipName === BROWSER_CLIP_ALIAS && command === "view.answer") {
+      } else if (clipName === BROWSER_CLIP_ALIAS && command === "stream.answer") {
         result = await streamerCommand("/command", {
           method: "answer",
           params: input,
         });
-      } else if (clipName === BROWSER_CLIP_ALIAS && command === "view.close") {
+      } else if (clipName === BROWSER_CLIP_ALIAS && command === "stream.close") {
         result = await streamerCommand("/command", {
           method: "stop",
+        });
+      } else if (clipName === BROWSER_CLIP_ALIAS && command === "stream.switch") {
+        const tabRef = (input as Record<string, unknown>).tab;
+        if (!tabRef) throw new Error("Missing tab parameter");
+        const cdpUrl = await this.getTabCdpUrl(String(tabRef));
+        result = await streamerCommand("/command", {
+          method: "switch",
+          params: { cdpUrl },
         });
       } else if (clipName === BROWSER_CLIP_ALIAS) {
         // Browser commands — dispatch directly via CDP (no HTTP round-trip!)
@@ -760,7 +780,7 @@ export class HubBridge {
 
   /**
    * Build the CDP WebSocket URL for the current (or first) page target.
-   * Used by view.start to tell the streamer which tab to connect to.
+   * Used by stream.start to tell the streamer which tab to connect to.
    */
   private async getCurrentTabCdpUrl(): Promise<string> {
     if (!this.cdp.connected) {
@@ -777,6 +797,28 @@ export class HubBridge {
       : undefined;
     const page = current ?? targets.find((t) => t.type === "page");
     if (!page) throw new Error("No page target found for streamer");
+    return `ws://${this.cdp.host}:${this.cdp.port}/devtools/page/${page.id}`;
+  }
+
+  /**
+   * Resolve a short tab ID to a CDP WebSocket URL.
+   * Used by stream.switch to tell the streamer which tab to connect to.
+   */
+  private async getTabCdpUrl(tabRef: string): Promise<string> {
+    if (!this.cdp.connected) {
+      await Promise.race([
+        this.cdp.waitUntilReady(),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("CDP connection timeout")), COMMAND_TIMEOUT),
+        ),
+      ]);
+    }
+    // Resolve short ID to full target ID
+    const resolvedId = this.cdp.tabManager.resolveShortId(tabRef);
+    const targetId = resolvedId || tabRef;
+    const targets = await this.cdp.getTargets();
+    const page = targets.find((t) => t.id === targetId && t.type === "page");
+    if (!page) throw new Error(`Tab not found: ${tabRef}`);
     return `ws://${this.cdp.host}:${this.cdp.port}/devtools/page/${page.id}`;
   }
 

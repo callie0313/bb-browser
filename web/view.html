@@ -307,7 +307,7 @@ video { max-width: 100%; max-height: 100%; object-fit: contain; background: #000
 
 <script type="module">
 // invoke() calls the Hub's clip API endpoint. Works in subdomain mode:
-//   browser.hub.pinixai.com/api/view.start -> Hub proxies to provider invoke
+//   browser.hub.pinixai.com/api/stream.start -> Hub proxies to provider invoke
 async function invoke(command, input) {
   const resp = await fetch(`/api/${command}`, {
     method: "POST",
@@ -491,7 +491,7 @@ function renderTabs(tabs) {
       e.stopPropagation();
       debugLog("tab", "close_click", { tab: tab.tab });
       try {
-        await invoke("view.tab_close", { id: tab.tab });
+        await invoke("close", { tab: tab.tab });
         debugLog("tab", "close_done", { tab: tab.tab });
         await fetchTabs();
       } catch (err) {
@@ -509,15 +509,15 @@ function renderTabs(tabs) {
 async function fetchTabs() {
   try {
     debugLog("api", "fetch_tabs_start", { activeTabId });
-    const result = await invoke("view.tab_list", {});
-    const tabs = (result.tabs || []).map((t, i) => ({ ...t, tab: t.id || t.tab, index: i }));
+    const result = await invoke("tab_list", {});
+    const tabs = (result.tabs || []).map((t, i) => ({ ...t, tab: t.tab || t.id, index: i }));
     lastTabs = tabs;
-    // Update active tab — prefer the viewer's activeTab (the tab being streamed)
-    const viewerActiveTab = result.activeTab || null;
+    // Update active tab — find the tab marked active by daemon
+    const daemonActive = tabs.find(t => t.active);
     if (tabs.length === 0) {
       activeTabId = null;
-    } else if (viewerActiveTab && tabs.some(t => t.tab === viewerActiveTab)) {
-      activeTabId = viewerActiveTab;
+    } else if (daemonActive && (!activeTabId || !tabs.some(t => t.tab === activeTabId))) {
+      activeTabId = daemonActive.tab;
     } else if (!activeTabId || !tabs.some(t => t.tab === activeTabId)) {
       activeTabId = tabs[0].tab;
     }
@@ -541,7 +541,7 @@ async function selectTab(tabId) {
   if (tabId === activeTabId) return;
   debugLog("tab", "select_click", { tab: tabId, previous: activeTabId });
   try {
-    await invoke("view.tab_switch", { id: tabId });
+    await invoke("stream.switch", { tab: tabId });
     activeTabId = tabId;
     debugLog("tab", "select_done", { tab: tabId });
     await fetchTabs();
@@ -554,9 +554,13 @@ async function selectTab(tabId) {
 newTabBtn.onclick = async () => {
   debugLog("tab", "new_click", { activeTabId });
   try {
-    const result = await invoke("view.tab_new", {});
-    activeTabId = result.id || result.tab;
+    const result = await invoke("tab_new", {});
+    activeTabId = result.tab || result.id;
     debugLog("tab", "new_done", { tab: result.tab });
+    // Switch streamer to the new tab
+    if (connected && activeTabId) {
+      try { await invoke("stream.switch", { tab: activeTabId }); } catch {}
+    }
     await fetchTabs();
   } catch (err) {
     debugLog("tab", "new_failed", { message: err.message });
@@ -596,9 +600,11 @@ async function navigateToURL(url) {
   }
   url = normalizeURL(url);
   urlInput.value = url;
-  debugLog("nav", "trigger", { url, trigger: "url_bar" });
+  debugLog("nav", "trigger", { url, tab: activeTabId, trigger: "url_bar" });
   try {
-    const result = await invoke("view.navigate", { url });
+    const params = { url };
+    if (activeTabId) params.tab = activeTabId;
+    const result = await invoke("open", params);
     debugLog("nav", "done", { url, result });
     // Refresh tabs after navigation to update titles
     setTimeout(() => fetchTabs(), 1000);
@@ -610,15 +616,18 @@ async function navigateToURL(url) {
 
 backBtn.onclick = async () => {
   debugLog("nav", "back_click");
-  try { await invoke("view.back", {}); } catch (err) { debugLog("nav", "back_failed", { message: err.message }); }
+  const params = activeTabId ? { tab: activeTabId } : {};
+  try { await invoke("back", params); } catch (err) { debugLog("nav", "back_failed", { message: err.message }); }
 };
 forwardBtn.onclick = async () => {
   debugLog("nav", "forward_click");
-  try { await invoke("view.forward", {}); } catch (err) { debugLog("nav", "forward_failed", { message: err.message }); }
+  const params = activeTabId ? { tab: activeTabId } : {};
+  try { await invoke("forward", params); } catch (err) { debugLog("nav", "forward_failed", { message: err.message }); }
 };
 reloadBtn.onclick = async () => {
   debugLog("nav", "reload_click");
-  try { await invoke("view.reload", {}); } catch (err) { debugLog("nav", "reload_failed", { message: err.message }); }
+  const params = activeTabId ? { tab: activeTabId } : {};
+  try { await invoke("reload", params); } catch (err) { debugLog("nav", "reload_failed", { message: err.message }); }
 };
 goBtn.onclick = () => navigateToURL(urlInput.value);
 
@@ -843,7 +852,7 @@ async function connect() {
   debugLog("webrtc", "connect_start");
   let offer;
   try {
-    offer = await invoke("view.start", {});
+    offer = await invoke("stream.start", {});
     debugLog("webrtc", "offer_received", { sdpBytes: offer.offer_sdp ? offer.offer_sdp.length : 0, candidates: (offer.candidates || []).length });
   } catch (err) {
     setStatus("error", "Failed: " + (err.message || err));
@@ -965,7 +974,7 @@ async function connect() {
   // Send answer
   setStatus("connecting", "Sending answer...");
   try {
-    await invoke("view.answer", {
+    await invoke("stream.answer", {
       answer_sdp: pc.localDescription.sdp,
       candidates: localCandidates,
     });
@@ -982,7 +991,7 @@ async function connect() {
 
 async function disconnect() {
   debugLog("webrtc", "disconnect");
-  try { await invoke("view.close", {}); } catch {}
+  try { await invoke("stream.close", {}); } catch {}
   cleanup();
 }
 
@@ -1035,7 +1044,7 @@ window.addEventListener("focus", () => {
 // Cleanup on page unload
 window.addEventListener("beforeunload", () => {
   if (connected) {
-    try { invoke("view.close", {}); } catch {}
+    try { invoke("stream.close", {}); } catch {}
     cleanup();
   }
 });
