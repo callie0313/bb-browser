@@ -697,7 +697,11 @@ export class CdpConnection {
         "Browser.getVersion",
       ).catch(() => null);
       const product = String((versionInfo as any)?.product ?? "");
-      const isHeadlessShell = product.startsWith("HeadlessChrome");
+      // Stealth injection disabled: Emulation overrides and addScriptToEvaluateOnNewDocument
+      // are themselves detectable by anti-bot systems (Google, Cloudflare).
+      // Full Chrome with --headless=new works without stealth.
+      // headless-shell is inherently detectable (missing browser APIs) regardless of stealth.
+      const isHeadlessShell = false;
 
       if (isHeadlessShell) {
         // headless-shell exposes "HeadlessChrome" in UA and has 800x600 screen —
