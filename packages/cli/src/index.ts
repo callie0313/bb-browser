@@ -38,7 +38,7 @@ const TAB_REQUIRED_COMMANDS = new Set([
   "snap", "screenshot", "get",
   "click", "hover", "fill", "type", "check", "uncheck", "select",
   "press", "scroll", "back", "forward", "reload", "close",
-  "frame", "dialog", "network", "console", "errors", "trace",
+  "frame", "dialog", "network", "console", "errors",
 ]);
 
 // eval requires --tab unless --domain is provided
@@ -95,7 +95,11 @@ bb-browser - AI Agent 浏览器自动化工具
   network requests [filter]    查看网络请求 (--tab required)
   console [--clear]            查看/清空控制台 (--tab required)
   errors [--clear]             查看/清空 JS 错误 (--tab required)
-  trace start|stop|status      录制用户操作 (--tab required)
+  trace start [--tab <id>]     录制操作+网络的统一时间线
+  trace events [--type action|request] 查看时间线（支持 --since/--filter/--tab）
+  trace body <requestId>       获取某个请求的 response body
+  trace stop                   停止录制（数据保留）
+  trace status                 查看录制状态
   daemon [start|status|stop]   管理 daemon
 
 选项：
@@ -108,6 +112,11 @@ bb-browser - AI Agent 浏览器自动化工具
   -d, --depth <n>      限制树深度（snap 命令）
   -s, --selector <sel> 限定 CSS 选择器范围（snap 命令）
   --tab <tabId>        指定操作的标签页 ID
+  --since <seq>        增量查询（network/console/errors/trace events）
+  --type <t>           过滤事件类型（trace events: action/request/response）
+  --filter <str>       URL 或文字过滤（trace events/network requests）
+  --limit <n>          限制返回条数
+  --request-id <id>    请求 ID（trace body）
   --help, -h           显示帮助信息
   --version, -v        显示版本号
 `.trim();
@@ -220,6 +229,30 @@ function parseArgs(argv: string[]): ParsedArgs {
       skipNext = true;
     } else if (arg === "--status") {
       skipNext = true;
+    } else if (arg === "--type") {
+      skipNext = true;
+      const nextIdx = args.indexOf(arg) + 1;
+      if (nextIdx < args.length) {
+        (result.flags as Record<string, unknown>).type = args[nextIdx];
+      }
+    } else if (arg === "--filter") {
+      skipNext = true;
+      const nextIdx = args.indexOf(arg) + 1;
+      if (nextIdx < args.length) {
+        (result.flags as Record<string, unknown>).filter = args[nextIdx];
+      }
+    } else if (arg === "--limit") {
+      skipNext = true;
+      const nextIdx = args.indexOf(arg) + 1;
+      if (nextIdx < args.length) {
+        (result.flags as Record<string, unknown>).limit = parseInt(args[nextIdx], 10);
+      }
+    } else if (arg === "--request-id") {
+      skipNext = true;
+      const nextIdx = args.indexOf(arg) + 1;
+      if (nextIdx < args.length) {
+        (result.flags as Record<string, unknown>)["request-id"] = args[nextIdx];
+      }
     } else if (arg.startsWith("-")) {
       // Unknown flags, ignore
     } else if (result.command === null) {
@@ -559,12 +592,21 @@ async function main(): Promise<void> {
       }
 
       case "trace": {
-        const subCmd = parsed.args[0] as 'start' | 'stop' | 'status' | undefined;
-        if (!subCmd || !['start', 'stop', 'status'].includes(subCmd)) {
-          console.error("用法：bb-browser trace <start|stop|status> --tab <tabId>");
+        const subCmd = parsed.args[0] as 'start' | 'stop' | 'status' | 'events' | 'body' | undefined;
+        if (!subCmd || !['start', 'stop', 'status', 'events', 'body'].includes(subCmd)) {
+          console.error("用法：bb-browser trace <start|stop|status|events|body> [--tab <tabId>]");
           process.exit(1);
         }
-        await traceCommand(subCmd, { json: parsed.flags.json, tabId: globalTabId });
+        const f = parsed.flags as Record<string, unknown>;
+        await traceCommand(subCmd, {
+          json: parsed.flags.json,
+          tabId: globalTabId,
+          since: globalSince,
+          type: f.type as string | undefined,
+          filter: f.filter as string | undefined,
+          limit: f.limit as number | undefined,
+          requestId: (f["request-id"] as string | undefined) || parsed.args[1],
+        });
         break;
       }
 
